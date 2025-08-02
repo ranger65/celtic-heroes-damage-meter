@@ -14,6 +14,9 @@ The Damage_Meter_Visuals.exe reads this data and shows player and enemy damage i
 
 
 
+
+
+
 How to Set Up the Damage Meter for Celtic Heroes Using Cheat Engine 7.6:
 
 - Open Cheat Engine 7.6
