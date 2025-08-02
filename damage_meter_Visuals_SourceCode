@@ -1,0 +1,496 @@
+#![windows_subsystem = "windows"]
+use std::sync::Arc;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+use std::io::{Seek, SeekFrom};
+use std::path::Path;
+use std::io::Read;
+use std::env;
+use std::path::PathBuf;
+
+use winit::{
+    application::ApplicationHandler,
+    event::{WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    window::{Window, WindowId},
+};
+
+
+use egui::{Context as EguiContext};
+use egui_wgpu::{Renderer, wgpu};
+use egui_winit::State as EguiWinitState;
+
+use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
+use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE};
+
+struct DamageMeter {
+    damage_map: HashMap<u32, PlayerDamage>,
+    displayed_progress: HashMap<u32, f32>,
+}
+
+
+struct PlayerDamage {
+    name: String,
+    total_damage: u32,
+    last_update: Instant,
+}
+
+#[derive(Default)]
+struct App<'a> {
+    window: Option<Arc<Window>>,
+    egui_ctx: Option<EguiContext>,
+    egui_winit: Option<EguiWinitState>,
+    egui_renderer: Option<Renderer>,
+    device: Option<wgpu::Device>,
+    queue: Option<wgpu::Queue>,
+    surface: Option<wgpu::Surface<'a>>,
+    config: Option<wgpu::SurfaceConfiguration>,
+    damage_map: HashMap<u32, PlayerDamage>,
+    last_file_check: Option<Instant>,
+    displayed_progress: HashMap<u32, f32>,
+}
+
+fn extract_clean_name(raw: &[u8]) -> String {
+    let s = String::from_utf8_lossy(raw);
+    s.trim_end_matches(|c| c == '\0' || c == ' ').to_string()
+}
+fn clean_name(name: &str) -> String {
+    let mut chars = name.chars().peekable();
+    let mut cleaned = String::new();
+
+    while let Some(c) = chars.next() {
+        if c.is_alphabetic() {
+            cleaned.push(c);
+        } else if c == ' ' {
+            // Peek previous and next chars for letters
+            let prev_is_letter = cleaned.chars().rev().next().map_or(false, |pc| pc.is_alphabetic());
+            let next_is_letter = chars.peek().map_or(false, |nc| nc.is_alphabetic());
+
+            if prev_is_letter && next_is_letter {
+                cleaned.push(' ');
+            }
+            // skip the space
+        }
+        //  skip any non-letter/non-space chars
+    }
+
+    cleaned
+}
+fn get_bin_file_path() -> Option<PathBuf> {
+
+    let exe_path = env::current_exe().ok()?;
+  
+    let exe_dir = exe_path.parent()?;
+
+    Some(exe_dir.join("bytes_before_attackerID.bin"))
+}
+
+impl<'a> App<'a> {
+    fn get_hwnd(window: &Window) -> HWND {
+        match window.raw_window_handle() {
+            Ok(RawWindowHandle::Win32(handle)) => HWND(handle.hwnd.get() as isize),
+            Ok(_) => panic!("Unexpected platform"),
+            Err(e) => panic!("Failed to get raw window handle: {:?}", e),
+        }
+    }
+
+    fn set_always_on_top(window: &Window) {
+        let hwnd = Self::get_hwnd(window);
+        unsafe {
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        }
+    }
+
+   fn update_damage_map(&mut self) -> std::io::Result<()> {
+    const MAX_ACCEPTABLE_DAMAGE: u32 = 1_000_000; // max single damage allowed
+    let filename = match get_bin_file_path() {
+        Some(path) => path,
+        None => return Ok(()), // Could not determine path, just return
+    };
+
+    if !filename.exists() {
+        return Ok(());
+    }
+
+    // Use filename as PathBuf (or &Path) from here on
+    let mut file = std::fs::OpenOptions::new()
+    .read(true)
+    .write(true)
+    .open(&filename)?;
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+
+    if bytes.is_empty() {
+        let now = Instant::now();
+        self.damage_map.retain(|_, dmg| now.duration_since(dmg.last_update) < Duration::from_secs(30));
+        return Ok(());
+    }
+
+    const RECORD_SIZE: usize = 38;
+    if bytes.len() < RECORD_SIZE {
+        return Ok(());
+    }
+
+    let mut offset = 0;
+    let now = Instant::now();
+
+    while offset + RECORD_SIZE <= bytes.len() {
+        let record = &bytes[offset..offset + RECORD_SIZE];
+        let raw_name_bytes = &record[..30];
+        let player_name = extract_clean_name(raw_name_bytes);
+
+        let attacker_id = u32::from_le_bytes(record[30..34].try_into().unwrap());
+        let damage = u32::from_le_bytes(record[34..38].try_into().unwrap());
+
+        // Ignore damage spikes exceeding threshold
+        if damage > MAX_ACCEPTABLE_DAMAGE {
+            offset += RECORD_SIZE;
+            continue; // skip this damage record
+        }
+
+        let entry = self.damage_map.entry(attacker_id).or_insert(PlayerDamage {
+            name: player_name.clone(),
+            total_damage: 0,
+            last_update: now,
+        });
+
+        entry.total_damage = entry.total_damage.saturating_add(damage);
+        entry.last_update = now;
+
+        offset += RECORD_SIZE;
+    }
+
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+
+    self.damage_map.retain(|_, dmg| now.duration_since(dmg.last_update) < Duration::from_secs(30));
+
+    Ok(())
+}
+
+}
+
+impl<'a> ApplicationHandler for App<'a> {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let attributes = Window::default_attributes()
+            .with_title("Always on top egui + winit window")
+            .with_decorations(true);
+
+        let window = Arc::new(event_loop.create_window(attributes).unwrap());
+        self.window = Some(window.clone());
+
+        // Setup wgpu and egui (same as your code)
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        let surface = instance.create_surface(window.clone()).unwrap();
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            compatible_surface: Some(&surface),
+            ..Default::default()
+        })).unwrap();
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+
+        let caps = surface.get_capabilities(&adapter);
+        let format = caps.formats[0];
+        let size = window.inner_size();
+        let alpha_mode = if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PostMultiplied) {
+            wgpu::CompositeAlphaMode::PostMultiplied
+        } else if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+            wgpu::CompositeAlphaMode::PreMultiplied
+        } else {
+            wgpu::CompositeAlphaMode::Opaque
+        };
+
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: size.width,
+            height: size.height,
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+
+        surface.configure(&device, &config);
+
+        self.device = Some(device);
+        self.queue = Some(queue);
+        self.surface = Some(surface);
+        self.config = Some(config);
+
+        let egui_ctx = EguiContext::default();
+        let egui_winit = EguiWinitState::new(
+            egui_ctx.clone(),
+            egui::ViewportId::ROOT,
+            window.as_ref(),
+            None, None, None,
+        );
+        let egui_renderer = Renderer::new(self.device.as_ref().unwrap(), format, None, 1, false);
+
+        self.egui_ctx = Some(egui_ctx);
+        self.egui_winit = Some(egui_winit);
+        self.egui_renderer = Some(egui_renderer);
+
+        self.damage_map = HashMap::new();
+        self.last_file_check = Some(Instant::now());
+        self.displayed_progress = HashMap::new();
+        Self::set_always_on_top(&window);
+        window.request_redraw();
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if self.egui_winit.as_mut().unwrap().on_window_event(self.window.as_ref().unwrap(), &event).consumed {
+            return;
+        }
+
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(new_size) => {
+                if let (Some(surface), Some(device), Some(config)) = (&self.surface, &self.device, &mut self.config) {
+                    config.width = new_size.width.max(1);
+                    config.height = new_size.height.max(1);
+                    surface.configure(device, config);
+                }
+                self.window.as_ref().unwrap().request_redraw();
+            }
+            WindowEvent::RedrawRequested => {
+                if self.last_file_check.map_or(true, |last| last.elapsed() > Duration::from_millis(100)) {
+                    if let Err(e) = self.update_damage_map() {
+                        eprintln!("Failed to update damage map: {:?}", e);
+                    }
+                    self.last_file_check = Some(Instant::now());
+                }
+
+
+                let device = self.device.as_ref().unwrap();
+                let queue = self.queue.as_ref().unwrap();
+                let surface = self.surface.as_ref().unwrap();
+                let config = self.config.as_ref().unwrap();
+
+                let frame = match surface.get_current_texture() {
+                    Ok(frame) => frame,
+                    Err(e) => {
+                        eprintln!("Dropped frame: {:?}", e);
+                        self.window.as_ref().unwrap().request_redraw();
+                        return;
+                    }
+                };
+                let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("egui Render Encoder"),
+                });
+
+                let raw_input = self.egui_winit.as_mut().unwrap().take_egui_input(self.window.as_ref().unwrap());
+
+               let full_output = self.egui_ctx.as_ref().unwrap().run(raw_input, |ctx| {
+    egui::CentralPanel::default().show(ctx, |ui| {
+
+        let mut players: Vec<_> = self.damage_map.iter().collect();
+        players.sort_by(|a, b| b.1.total_damage.cmp(&a.1.total_damage));
+
+        let available_width = ui.available_width();
+
+        // Calculate total damage done by all players
+        let total_damage = players.iter()
+            .map(|(_, d)| d.total_damage as u64)
+            .sum::<u64>() as f32;
+
+        // Color palette for bars
+            let colors = [
+                egui::Color32::from_rgb(0xE6, 0x4C, 0x4C), // red
+                egui::Color32::from_rgb(0x4C, 0xA6, 0xE6), // blue
+                egui::Color32::from_rgb(0x4C, 0xE6, 0x7A), // green
+                egui::Color32::from_rgb(0xE6, 0xD2, 0x4C), // yellow
+                egui::Color32::from_rgb(0xA2, 0x4C, 0xE6), // purple
+                egui::Color32::from_rgb(0xE6, 0x4C, 0xBD), // pink
+                egui::Color32::from_rgb(0x4C, 0xE6, 0xE6), // cyan
+                egui::Color32::from_rgb(0xFF, 0xA5, 0x00), // orange
+            ];
+
+        for (&id, dmg) in players {
+            // Calculate target progress (damage ratio)
+            let target_progress = if total_damage > 0.0 {
+                (dmg.total_damage as f32 / total_damage).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+
+            // Tween speed factor (adjust for smoothness)
+            let tween_speed = 0.15;
+
+            // Get current displayed progress, or default 0.0
+            let current_progress = self.displayed_progress.entry(id).or_insert(0.0);
+
+            // Update current progress towards target smoothly
+            *current_progress += (target_progress - *current_progress) * tween_speed;
+
+            let progress_to_draw = *current_progress;
+
+            let bar_width = available_width.max(100.0);  // full width for bar container
+            let bar_height = 24.0;
+            let padding = 6.0;
+
+            // Calculate filled width based on tweened progress
+            let filled_width = bar_width * progress_to_draw;
+
+            // Pick player color
+            let color = colors[(id as usize) % colors.len()];
+
+            ui.allocate_ui(egui::vec2(bar_width, bar_height), |ui| {
+                let (rect, _response) = ui.allocate_exact_size(egui::vec2(bar_width, bar_height), egui::Sense::hover());
+                let painter = ui.painter();
+
+                // Draw bar background
+                painter.rect_filled(rect, 4.0, ui.style().visuals.extreme_bg_color);
+
+                // Draw filled portion with player color
+                let filled_rect = egui::Rect::from_min_size(rect.min, egui::vec2(filled_width, rect.height()));
+                painter.rect_filled(filled_rect, 4.0, color);
+
+                // Reserve space for damage number on right (20%)
+                let damage_area_width = bar_width * 0.2;
+                let name_area_width = bar_width - damage_area_width - padding * 3.0;
+
+                // Clamp font sizes
+                let name_font_size = (name_area_width / 15.0).clamp(12.0, 18.0);
+                let damage_font_size = (damage_area_width / 10.0).clamp(12.0, 18.0);
+
+                // Clean and prepare player name
+                let cleaned_name = clean_name(&dmg.name);
+                let name_text = format!("{} (ID: {})", cleaned_name, id);
+
+                let name_galley = ui.painter().layout_no_wrap(
+                    name_text.clone(),
+                    egui::FontId::monospace(name_font_size),
+                    egui::Color32::WHITE,
+                );
+                let name_clip_width = name_area_width;
+
+                let mut displayed_name = name_text.clone();
+                if name_galley.size().x > name_clip_width {
+                    let mut chars: Vec<char> = name_text.chars().collect();
+                    while !chars.is_empty() {
+                        chars.pop();
+                        let trial = format!("{}...", chars.iter().collect::<String>());
+                        let trial_galley = ui.painter().layout_no_wrap(
+                            trial.clone(),
+                            egui::FontId::monospace(name_font_size),
+                            egui::Color32::WHITE,
+                        );
+                        if trial_galley.size().x <= name_clip_width {
+                            displayed_name = trial;
+                            break;
+                        }
+                    }
+                }
+
+                // Draw player name left-aligned
+                painter.text(
+                    rect.min + egui::vec2(padding, rect.height() / 2.0),
+                    egui::Align2::LEFT_CENTER,
+                    &displayed_name,
+                    egui::FontId::monospace(name_font_size),
+                    egui::Color32::WHITE,
+                );
+
+                // Draw damage number right-aligned
+                painter.text(
+                    rect.max - egui::vec2(padding, rect.height() / 2.0),
+                    egui::Align2::RIGHT_CENTER,
+                    &format!("{}", dmg.total_damage),
+                    egui::FontId::proportional(damage_font_size),
+                    egui::Color32::WHITE,
+                );
+            });
+
+            ui.add_space(6.0);
+        }
+    });
+});
+
+
+
+
+
+
+
+
+
+                self.egui_winit.as_mut().unwrap().handle_platform_output(
+                    self.window.as_ref().unwrap(),
+                    full_output.platform_output.clone(),
+                );
+
+                let screen_descriptor = egui_wgpu::ScreenDescriptor {
+                    size_in_pixels: [config.width, config.height],
+                    pixels_per_point: full_output.pixels_per_point,
+                };
+
+                for (id, image_delta) in &full_output.textures_delta.set {
+                    self.egui_renderer.as_mut().unwrap().update_texture(device, queue, *id, image_delta);
+                }
+
+                let clipped_primitives = self.egui_ctx.as_ref().unwrap().tessellate(
+                    full_output.shapes,
+                    full_output.pixels_per_point,
+                );
+
+                self.egui_renderer.as_mut().unwrap().update_buffers(
+                    device,
+                    queue,
+                    &mut encoder,
+                    &clipped_primitives,
+                    &screen_descriptor,
+                );
+
+                for id in &full_output.textures_delta.free {
+                    self.egui_renderer.as_mut().unwrap().free_texture(id);
+                }
+
+                let clear_color = wgpu::Color {
+                    r: 0.,
+                    g: 0.,
+                    b: 0.,
+                    a: 1.,
+                };
+
+                {
+                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("egui main pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(clear_color),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        occlusion_query_set: None,
+                        timestamp_writes: None,
+                    }).forget_lifetime();
+
+                    self.egui_renderer.as_ref().unwrap().render(&mut rpass, &clipped_primitives, &screen_descriptor);
+                }
+
+                queue.submit(Some(encoder.finish()));
+                frame.present();
+
+                self.window.as_ref().unwrap().request_redraw();
+            }
+            _ => {}
+        }
+    }
+}
+
+fn main() {
+    let event_loop = EventLoop::new().unwrap();
+    event_loop.set_control_flow(ControlFlow::Poll);
+    let mut app = App::default();
+    event_loop.run_app(&mut app);
+}
