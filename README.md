@@ -10,14 +10,13 @@
 
 - Open the built-in Lua engine inside Cheat Engine by going to Table, then "Show Cheat Table Lua Script"
 
-- Scroll to the bottom of that Lua script and find the "local basePath = ..." variable. Change it to the folder where you downloaded the file
+- Scroll to the bottom of that Lua script and find the "local basePath = ..." variable. Change it to the downloaded folder(contains: damage_meter_Visuals.exe...)
 
 - Execute the Lua script
 
 - Run Damage_Meter_Visuals.exe
 
-If everything went well, you should see player and enemy damage appear in the Damage Meter Visuals window!
-
+If everything went well, you should see player and enemy damage appear in the Damage Meter Visuals window live!
 
 This project is a contribution to the celtic heroes community for the years this game has kept me captivated edit it as you see fit-
 
