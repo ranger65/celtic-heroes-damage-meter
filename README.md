@@ -11,11 +11,11 @@ The assembly script modifies how damage data is accessed
 The Lua script runs inside Cheat Engine and collects damage info, then writes it for visualization
 
 The Damage_Meter_Visuals.exe reads this data and shows player and enemy damage in a window
--
--
--
--
 
+-
+-
+-
+-
 
 Set Up:
 
