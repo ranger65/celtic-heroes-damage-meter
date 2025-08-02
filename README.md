@@ -11,13 +11,13 @@ The assembly script modifies how damage data is accessed
 The Lua script runs inside Cheat Engine and collects damage info, then writes it for visualization
 
 The Damage_Meter_Visuals.exe reads this data and shows player and enemy damage in a window
+-
+-
+-
+-
 
 
-
-
-
-
-How to Set Up the Damage Meter for Celtic Heroes Using Cheat Engine 7.6:
+Set Up:
 
 - Open Cheat Engine 7.6
 
