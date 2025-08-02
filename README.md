@@ -1,4 +1,19 @@
-(PC ONLY!!!)How to Set Up the Damage Meter for Celtic Heroes Using Cheat Engine 7.6:
+
+How It Works:
+
+Cheat Engine attaches to the running Celtic Heroes game process to read game memory in real time
+
+The provided .CT file contains assembly and a Lua script made for Celtic Heroes to read damage data
+
+The assembly script modifies how damage data is accessed
+
+The Lua script runs inside Cheat Engine and collects damage info, then writes it for visualization
+
+The Damage_Meter_Visuals.exe reads this data and shows player and enemy damage in a window
+
+
+
+How to Set Up the Damage Meter for Celtic Heroes Using Cheat Engine 7.6:
 
 - Open Cheat Engine 7.6
 
