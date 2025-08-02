@@ -31,7 +31,7 @@ Set Up:
 
 - Run Damage_Meter_Visuals.exe
 
-If everything went well, you should see player and enemy damage appear in the Damage Meter Visuals window live!
+If everything went well, you should see player and enemy damage appear in the Damage Meter window live!
 
 This project is a contribution to the celtic heroes community for the years this game has kept me captivated edit it as you see fit-
 
