@@ -1,4 +1,4 @@
-v(1.0)
+v(1.1)
 
 How It Works:
 
@@ -24,8 +24,6 @@ Set Up:
 - Run the assembly script in the lower panel of Cheat Engine
 
 - Open the built-in Lua engine inside Cheat Engine by going to Table, then "Show Cheat Table Lua Script"
-
-- Scroll to the bottom of that Lua script and find the "local basePath = ..." variable. Change it to the downloaded folder(contains: damage_meter_Visuals.exe...)
 
 - Execute the Lua script
 
