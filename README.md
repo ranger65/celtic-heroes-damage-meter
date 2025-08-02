@@ -1,4 +1,4 @@
-version(1.0)
+v(1.0)
 
 How It Works:
 
