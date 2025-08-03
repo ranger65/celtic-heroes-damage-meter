@@ -26,7 +26,7 @@ Set Up:
 
 - Open the built-in Lua engine inside Cheat Engine by going to Table, then "Show Cheat Table Lua Script"
 
-- Execute the Lua script
+- Execute the Lua script(Will look like cheat engine froze thats completely normal its proccessing tons of memory)
 
 - Run Damage_Meter_Visuals.exe
 
