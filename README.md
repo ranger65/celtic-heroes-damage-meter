@@ -14,7 +14,7 @@ The Damage_Meter_Visuals.exe reads this data and shows player and enemy damage i
   
   
 Set Up:
-- Download the Damage Meter File(should contain a .CT,.bin,and a graphics window executable)
+- Download the Damage_Meter File(should contain a .CT,.bin,and a graphics window executable)
 
 - Open Cheat Engine 7.6
 
